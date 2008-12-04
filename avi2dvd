@@ -1,21 +1,20 @@
 #!/usr/bin/ruby
 # avi2dvd:  Ruby script to automatically transcode video and author DVD's 
-#   (c) 2008 Patrick Morgan 
-#   Usage is granted under the GPL3 license. All rights reserved.
-#   No warranty is granted, either explicit or implied.  Use at your own risk!
+require 'getoptlong'
 
-
-THREADS = 1
+MAX_THREADS = 1             # Edit for 1 per Processor core
 MIN_AUDIO_BITRATE = 128     # In kb/s
 AUDIO_BITRATE = 192         # In kb/s
-MIN_VIDEO_BITRATE = 2000    # In kb/s
+MIN_VIDEO_BITRATE = 1500    # In kb/s
 MAX_VIDEO_BITRATE = 6000    # In kb/s
 DVD_SIZE = 4.2              # In gigabytes
 MAX_RUNTIME = ((DVD_SIZE*1024*1024*8)/(MIN_VIDEO_BITRATE+MIN_AUDIO_BITRATE)/60).to_i  # In minutes
+FFMPEG_COMMAND = "ffmpeg"
+#FFMPEG_COMMAND = "/opt/bin/ffmpeg"
 
-def do_convert(files)
-    files = files.collect do |f|
-        raise "File not found: #{f}" unless File.exist?(f)
+def do_convert(options)
+    files = options[:files].collect do |f|
+        raise "File not found: #{f}" unless File.file?(f)
         {
             :filename => f ,
             :length => get_duration(f),
@@ -33,7 +32,7 @@ def do_convert(files)
     video_bitrate = get_video_bitrate(total_runtime, audio_bitrate)
     files.each{|f| f[:video_bitrate] = video_bitrate; f[:audio_bitrate] = audio_bitrate}
     
-    if ARGV.size == 1
+    if (files.size == 1 || options[:one_title])
         base_name = "#{files.first[:infile_base]}"
     else
         base_name = "Compilation"
@@ -47,6 +46,7 @@ def do_convert(files)
     puts " * #{files.size} Titles (#{total_runtime}m): Encoding at #{video_bitrate}kb/s VBR, #{audio_bitrate}kb/s ABR"
     puts files.collect{|f| "   - #{f[:filename]} => #{f[:length]}m"}.join("\n")
     
+  
     # Create DVD compatible MPG's
     files.each do |file|
         infile_base = file[:infile_base]
@@ -58,6 +58,7 @@ def do_convert(files)
         # Pre-Run Cleanup
         system("rm -rf '#{base_name}_dvd/' '#{infile_base}_dvd.mpg' '#{base_name}.iso'")
 
+    
         # Create DVD compatible MPG
         puts "\n\n"
         puts "Creating DVD compliant video."
@@ -65,13 +66,15 @@ def do_convert(files)
         puts " * Source: #{infile}"
         puts " * Duration: #{length}"
         puts " * Output: vbr => #{video_bitrate}, abr => #{audio_bitrate}"
-        ffmpeg_command = "ffmpeg -threads #{THREADS} -i '#{infile}' -aspect #{ASPECT} -target ntsc-dvd -b #{video_bitrate}k -ab #{audio_bitrate}k '#{infile_base}_dvd.mpg'"
+        ffmpeg_command = "#{FFMPEG_COMMAND} -threads #{MAX_THREADS} -i '#{infile}' \
+		-async 2 -aspect #{options[:ratio]} -target ntsc-dvd -b #{video_bitrate}k \
+		-ab #{audio_bitrate}k -ac 2 '#{infile_base}_dvd.mpg'"
         puts "-------------------------------------------------------"
         print "Command: "
         puts ffmpeg_command
         puts "-------------------------------------------------------"
         system(ffmpeg_command)
-        raise "Error transcoding!" unless File.exist?("#{infile_base}_dvd.mpg")
+        raise "Error transcoding! #{infile_base}_dvd.mpg does not exist." unless File.exist?("#{infile_base}_dvd.mpg")
     end
 
 
@@ -80,14 +83,25 @@ def do_convert(files)
     puts "Creating VIDEO_TS..."
     puts "======================================================="
     
-    chapter_info = []
-    files.each do |file|
-        chapters = (["0"] + (1..file[:length].divmod(5)[0]).to_a.collect{|t| (5*t).to_s + ":00"}).join(',')
-        file_info = "-t --chapters='#{chapters}' -f \"#{file[:infile_base]}_dvd.mpg\" "
-        chapter_info << file_info
+    title_info = []
+    if options[:one_title]
+      if options[:with_chapters]
+         chapters = (["0"] + (1..length.divmod(5)[0]).to_a.collect{|t| (5*t).to_s + ":00"}).join(',')
+      end
+      file_args = files.collect{|f| "-f \"#{f[:infile_base]}_dvd.mpg\""}.join(' ')
+      file_info = "-t #{"--chapters='#{chapters}'" if chapters}  #{file_args}"
+      title_info << file_info
+    else
+      files.each do |file|
+          if options[:with_chapters]
+            chapters = (["0"] + (1..file[:length].divmod(5)[0]).to_a.collect{|t| (5*t).to_s + ":00"}).join(',')
+          end
+          file_info = "-t #{"--chapters='#{chapters}'" if chapters} -f \"#{file[:infile_base]}_dvd.mpg\" "
+          title_info << file_info
+      end
     end
 
-    author_command = "dvdauthor  #{chapter_info.join(' ')} -o '#{base_name}_dvd/'"
+    author_command = "dvdauthor  #{title_info.join(' ')} -o '#{base_name}_dvd/'"
     puts author_command
     system(author_command)
     system("dvdauthor -o '#{base_name}_dvd/' -T")
@@ -119,30 +133,65 @@ def get_duration(infile)
     duration_string = info.match(/Duration: ([0-9]{2}:[0-9]{2}:[0-9]{2})/)[1]
     (hours,minutes,seconds) =  duration_string.split(':')
     length_in_minutes = (hours.to_i*60 + minutes.to_i + 1).to_i
-    return length_in_minutes
 end    
 
 def usage
-    return <<-EOF
-Usage: avi2dvd FILE FILE2 FILE3
+    return <<EOF
+Usage: avi2dvd [OPTIONS] FILE FILE2 FILE3
    Automatically transcode and author single or multi-title DVD's to ISO. 
    Video bitrate is automatically optimized for runtime.
    Requires ffmpeg, dvdauthor, mkisofs.
+
+-h, --help
+    show help
+
+--ratio
+    specify aspect ratio (i.e. 4:3 or default 16:9)
+
+--with-chapters
+    enable 5 minute chapter intervals
+
+--one-title
+    merge files into one title
+
+
 EOF
 end
 
-if ARGV.empty?
-    puts usage()
-    exit()
+opts = GetoptLong.new(
+ ['--help', '-h', GetoptLong::NO_ARGUMENT],
+ ['--ratio', '-r', GetoptLong::REQUIRED_ARGUMENT],
+ ['--with-chapters',GetoptLong::NO_ARGUMENT],
+ ['--one-title',GetoptLong::NO_ARGUMENT]
+)
+
+options = {}
+options[:files] = []
+options[:ratio] = "16:9"
+opts.each do |opt, arg|
+  case opt
+  when '--help'
+    show_usage = true
+  when '--ratio'
+    options[:ratio] = ((arg == "4:3") ? "4:3" : "16:9")
+  when '--with-chapters'
+    options[:with_chapters] = true
+  when '--one-title'
+    options[:one_title] = true
+  end
+end
+
+ARGV.each do |arg|
+  options[:files] << arg if File.file?(arg)
+end
+
+show_usage = true if ARGV.size == 0
+
+if show_usage
+  puts usage()
+  exit()
 else
-    if (ARGV.include?("4:3"))
-        ASPECT = "4:3"
-        
-    else
-        ASPECT = "16:9"
-    end
-    arguments = ARGV.reject{|x| x == "4:3" || x == "16:9"}
-    do_convert(arguments)
+  do_convert(options)  
 end
 
 
