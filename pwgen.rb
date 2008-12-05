@@ -8,7 +8,6 @@ class PwGen
   end
   
   def generate
-    v = false
     while (not (validate(pw = gen))); end;
     return pw
   end
