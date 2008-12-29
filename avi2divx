@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Creates a set-top compatible DivX file
+# Requires mencoder
+
+# Usage:  avi2divx input.avi output.avi
+
 mencoder "$1" -o "$2" \
            -ovc lavc -oac mp3lame -ffourcc DX50 \
            -lavcopts mbd=0:vbitrate=1152 \
