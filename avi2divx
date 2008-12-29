@@ -1,0 +1,7 @@
+#!/bin/bash
+
+mencoder "$1" -o "$2" \
+           -ovc lavc -oac mp3lame -ffourcc DX50 \
+           -lavcopts mbd=0:vbitrate=1152 \
+           -lameopts vbr=2:aq=3:q=3 -vf harddup=1 \
+           -channels 2 -srate 32000 -ofps 29.97
