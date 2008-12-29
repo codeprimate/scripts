@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# Fix audio bitrate of Powershot A590 camera video
+
+mencoder "$1" -o "$1.fixed.avi" -ovc copy -oac pcm
